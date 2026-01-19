@@ -1,0 +1,113 @@
+<!-- studio/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream Studio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/assets/frappe/js/lib/jquery/jquery.min.js"></script>
+    <script src="/assets/frappe/js/lib/moment.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="max-w-6xl mx-auto p-6">
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800">My Studio</h1>
+            <button onclick="createStream()" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded shadow">
+                + New Stream
+            </button>
+        </div>
+
+        <!-- Stream List -->
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <table class="min-w-full leading-normal">
+                <thead>
+                    <tr>
+                        <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-50 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Title</th>
+                        <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-50 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Status</th>
+                        <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-50 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Created</th>
+                        <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-50 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="stream-list">
+                    <!-- Loaded via JS -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // Use Frappe API calls if available, or fetch
+        // Note: In real app, we need auth tokens or cookies session
+
+        async function loadStreams() {
+            const response = await fetch('/api/resource/Live Stream?fields=["name","title","status","creation"]&filters=[["owner","=","current_user"]]', {
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }
+            });
+            const data = await response.json();
+            const list = document.getElementById('stream-list');
+            list.innerHTML = '';
+
+            if (data.data) {
+                data.data.forEach(stream => {
+                    const row = `
+                        <tr>
+                            <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm">
+                                <p class="text-gray-900 whitespace-no-wrap font-medium">${stream.title}</p>
+                            </td>
+                            <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm">
+                                <span class="relative inline-block px-3 py-1 font-semibold leading-tight">
+                                    <span aria-hidden="true" class="absolute inset-0 ${stream.status === 'Live' ? 'bg-green-200' : 'bg-gray-200'} opacity-50 rounded-full"></span>
+                                    <span class="relative ${stream.status === 'Live' ? 'text-green-900' : 'text-gray-900'}">${stream.status}</span>
+                                </span>
+                            </td>
+                            <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm">
+                                <p class="text-gray-900 whitespace-no-wrap">${moment(stream.creation).fromNow()}</p>
+                            </td>
+                            <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm">
+                                <a href="/studio/stream/${stream.name}" class="text-blue-600 hover:text-blue-900">Manage</a>
+                            </td>
+                        </tr>
+                    `;
+                    list.innerHTML += row;
+                });
+            }
+        }
+
+        async function createStream() {
+            const title = prompt("Enter Stream Title:");
+            if (!title) return;
+
+            // Get Best Node
+            const nodeRes = await fetch('/api/method/streaming_console.streaming_console.api.get_best_node');
+            const nodeData = await nodeRes.json();
+
+            if (nodeData.message) {
+                const assignedNode = nodeData.message.node_id;
+
+                // Create Stream Doc
+                const res = await fetch('/api/resource/Live Stream', {
+                    method: 'POST',
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Frappe-CSRF-Token': frappe.csrf_token },
+                    body: JSON.stringify({
+                        title: title,
+                        assigned_node: assignedNode
+                    })
+                });
+
+                if (res.ok) {
+                    loadStreams();
+                } else {
+                    alert("Failed to create stream");
+                }
+            } else {
+                alert("No capacity available!");
+            }
+        }
+
+        // Initialize
+        loadStreams();
+    </script>
+</body>
+</html>

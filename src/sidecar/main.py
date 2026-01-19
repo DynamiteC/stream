@@ -49,8 +49,10 @@ def sync_loop():
 
     while True:
         try:
-            # Structure: /data/live/[app]/[stream]/...
-            # Example: /data/live/live/match1/
+            # Structure: SRS outputs to /data/live/[app]/[stream].mpd
+            # Standard config: [app] is usually "live"
+            # So files are at: /data/live/live/streamkey.mpd
+
             root = Path(WATCH_DIR)
             if not root.exists():
                 logger.warning(f"Watch dir {WATCH_DIR} does not exist yet.")
@@ -60,27 +62,29 @@ def sync_loop():
             for app_dir in root.iterdir():
                 if not app_dir.is_dir(): continue
 
-                for stream_dir in app_dir.iterdir():
-                    if not stream_dir.is_dir(): continue
+                app_name = app_dir.name
 
-                    stream_key = stream_dir.name
-                    # S3 Path: backups/{node_id}/{app}/{stream}/{filename}
-                    # We include app_dir.name to be safe
+                # Iterate FILES in the app directory (e.g. /data/live/live/*.m4s)
+                # SRS DASH structure: [stream].mpd and [stream]-[seq].m4s are in the same folder
 
-                    # Upload Segments (.m4s)
-                    for file_path in stream_dir.glob("*.m4s"):
-                        if str(file_path) in uploaded_files:
+                # 1. Find Manifests to identify active streams
+                for manifest in app_dir.glob("*.mpd"):
+                    stream_key = manifest.stem # filename without extension
+
+                    # Upload Manifest
+                    s3_key_mpd = f"backups/{NODE_ID}/{app_name}/{stream_key}/{manifest.name}"
+                    upload_file(manifest, s3_key_mpd)
+
+                    # 2. Find related segments for this stream
+                    # SRS usually names them: [stream]-[seq].m4s
+                    # We can use glob with the stream_key prefix
+                    for segment in app_dir.glob(f"{stream_key}-*.m4s"):
+                        if str(segment) in uploaded_files:
                             continue
 
-                        s3_key = f"backups/{NODE_ID}/{app_dir.name}/{stream_key}/{file_path.name}"
-                        upload_file(file_path, s3_key)
-                        uploaded_files.add(str(file_path))
-
-                    # Upload Manifest (.mpd) - Always update
-                    # SRS usually names it [stream].mpd, but we use glob to be sure
-                    for manifest in stream_dir.glob("*.mpd"):
-                        s3_key = f"backups/{NODE_ID}/{app_dir.name}/{stream_key}/{manifest.name}"
-                        upload_file(manifest, s3_key)
+                        s3_key_seg = f"backups/{NODE_ID}/{app_name}/{stream_key}/{segment.name}"
+                        upload_file(segment, s3_key_seg)
+                        uploaded_files.add(str(segment))
 
         except Exception as e:
             logger.error(f"Error in loop: {e}")

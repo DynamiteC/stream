@@ -23,11 +23,15 @@ services:
       - "80:80" # HTTP Playback
     volumes:
       - ./src/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./src/nginx/entrypoint.sh:/entrypoint.sh
       - live_data:/usr/share/nginx/html # Read Shared Volume
     networks:
       - streaming-net
     environment:
       - NODE_ID=${NODE_ID}
+      - SECRET_KEY=${SECRET_KEY}
+    entrypoint: ["/entrypoint.sh"]
+    command: ["nginx", "-g", "daemon off;"]
 
   # 3. Backup Agent
   sidecar:
@@ -41,6 +45,7 @@ services:
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - S3_ENDPOINT=${S3_ENDPOINT}
+      - DRY_RUN=${DRY_RUN}
     networks:
       - streaming-net
 
