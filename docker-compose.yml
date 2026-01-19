@@ -14,6 +14,8 @@ services:
     command: ["./objs/srs", "-c", "conf/srs.conf"]
     networks:
       - streaming-net
+    depends_on:
+      - control-plane
 
   # 2. Delivery Edge
   nginx:
@@ -49,8 +51,42 @@ services:
     networks:
       - streaming-net
 
+  # 4. Control Plane (Priority 4)
+  control-plane:
+    build: ./src/control-plane
+    container_name: control_plane
+    volumes:
+      - ./src/control-plane:/home/frappe/frappe-bench/apps/streaming_console
+      - sites:/home/frappe/frappe-bench/sites
+    networks:
+      - streaming-net
+    depends_on:
+      - redis
+      - timescaledb
+
+  # 5. Database (Priority 2: TimescaleDB)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: timescaledb
+    environment:
+      - POSTGRES_PASSWORD=admin
+      - POSTGRES_DB=frappe
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - streaming-net
+
+  # 6. Cache (Priority 5: Redis)
+  redis:
+    image: redis:6-alpine
+    container_name: redis
+    networks:
+      - streaming-net
+
 volumes:
   live_data:
+  sites:
+  db_data:
 
 networks:
   streaming-net:
