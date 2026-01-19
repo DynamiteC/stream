@@ -6,6 +6,11 @@
 
 set -e
 
+# --- Configuration ---
+# Pin versions to ensure stability across production fleet
+DOCKER_COMPOSE_VERSION="v2.24.1"
+# ---------------------
+
 # 1. Variables
 NODE_ID=${1:-"node-$(hostname)"}
 AWS_KEY=$2
@@ -22,11 +27,30 @@ fi
 echo ">>> Starting Setup for Node: $NODE_ID"
 
 # 2. System Updates & Dependencies
-echo ">>> Installing Docker & Dependencies..."
+echo ">>> Installing System Dependencies..."
 sudo apt-get update -y
-sudo apt-get install -y curl git docker.io docker-compose
-sudo systemctl enable docker
-sudo systemctl start docker
+sudo apt-get install -y curl git
+
+# Install Docker Engine (if not present)
+if ! command -v docker &> /dev/null; then
+    echo ">>> Installing Docker Engine..."
+    # Using standard repo, but could use official script for stricter pinning
+    sudo apt-get install -y docker.io
+    sudo systemctl enable docker
+    sudo systemctl start docker
+else
+    echo ">>> Docker Engine already installed. Skipping."
+fi
+
+# Install Docker Compose (Pinned Version)
+if ! command -v docker-compose &> /dev/null; then
+    echo ">>> Installing Docker Compose ${DOCKER_COMPOSE_VERSION}..."
+    sudo curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    sudo chmod +x /usr/local/bin/docker-compose
+else
+    INSTALLED_VERSION=$(docker-compose version --short 2>/dev/null || echo "unknown")
+    echo ">>> Docker Compose already installed ($INSTALLED_VERSION). Skipping."
+fi
 
 # 3. Code Setup
 APP_DIR="/opt/streaming-node"
@@ -73,7 +97,8 @@ echo ">>> Configuration saved to .env"
 
 # 5. Launch
 echo ">>> Launching Services..."
-sudo docker-compose up -d --build
+# Ensure we use the binary we installed
+/usr/local/bin/docker-compose up -d --build
 
 echo ">>> Node $NODE_ID is READY!"
 echo ">>> Stream to: rtmp://$(curl -s ifconfig.me)/live/streamKey"
