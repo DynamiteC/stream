@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # 1. Ingest Engine
+  srs:
+    image: ossrs/srs:4
+    container_name: srs_node
+    ports:
+      - "1935:1935" # RTMP Ingest
+      # - "8080:8080" # Built-in HTTP (We use Nginx instead)
+    volumes:
+      - ./src/srs/srs.conf:/usr/local/srs/conf/srs.conf
+      - live_data:/usr/local/srs/objs/nginx/html # Shared Volume
+    command: ["./objs/srs", "-c", "conf/srs.conf"]
+    networks:
+      - streaming-net
+    depends_on:
+      - control-plane
+
+  # 2. Delivery Edge
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_edge
+    ports:
+      - "80:80" # HTTP Playback
+    volumes:
+      - ./src/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./src/nginx/entrypoint.sh:/entrypoint.sh
+      - live_data:/usr/share/nginx/html # Read Shared Volume
+    networks:
+      - streaming-net
+    environment:
+      - NODE_ID=${NODE_ID}
+      - SECRET_KEY=${SECRET_KEY}
+    entrypoint: ["/entrypoint.sh"]
+    command: ["nginx", "-g", "daemon off;"]
+
+  # 3. Backup Agent
+  sidecar:
+    build: ./src/sidecar
+    container_name: backup_sidecar
+    volumes:
+      - live_data:/data/live # Read Shared Volume
+    environment:
+      - NODE_ID=${NODE_ID}
+      - S3_BUCKET=${S3_BUCKET}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_ENDPOINT=${S3_ENDPOINT}
+      - DRY_RUN=${DRY_RUN}
+    networks:
+      - streaming-net
+
+  # 4. Control Plane (Priority 4)
+  control-plane:
+    build: ./src/control-plane
+    container_name: control_plane
+    volumes:
+      - ./src/control-plane:/home/frappe/frappe-bench/apps/streaming_console
+      - sites:/home/frappe/frappe-bench/sites
+    networks:
+      - streaming-net
+    depends_on:
+      - redis
+      - timescaledb
+
+  # 5. Database (Priority 2: TimescaleDB)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: timescaledb
+    environment:
+      - POSTGRES_PASSWORD=admin
+      - POSTGRES_DB=frappe
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - streaming-net
+
+  # 6. Cache (Priority 5: Redis)
+  redis:
+    image: redis:6-alpine
+    container_name: redis
+    networks:
+      - streaming-net
+
+volumes:
+  live_data:
+  sites:
+  db_data:
+
+networks:
+  streaming-net:

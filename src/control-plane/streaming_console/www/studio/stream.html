@@ -1,0 +1,86 @@
+<!-- studio/stream.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Stream</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/assets/frappe/js/lib/jquery/jquery.min.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div class="max-w-4xl mx-auto p-6">
+        <a href="/studio" class="text-blue-600 mb-4 inline-block">&larr; Back to Studio</a>
+
+        <div class="bg-white rounded shadow p-6 mb-6">
+            <h1 id="stream-title" class="text-2xl font-bold mb-4">Loading...</h1>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-gray-700 text-sm font-bold mb-2">Ingest Server</label>
+                    <div class="flex">
+                        <input id="ingest-url" readonly class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline bg-gray-50" value="rtmp://node-01.platform.com/live">
+                        <button onclick="copy('ingest-url')" class="ml-2 bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded">Copy</button>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-gray-700 text-sm font-bold mb-2">Stream Key (Keep Private)</label>
+                    <div class="flex">
+                        <input id="stream-key" readonly type="password" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline bg-gray-50">
+                        <button onclick="toggleShow()" class="ml-2 bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded">Show</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-6">
+                 <label class="block text-gray-700 text-sm font-bold mb-2">Status</label>
+                 <span id="status-badge" class="px-3 py-1 bg-gray-200 rounded-full text-sm">Offline</span>
+            </div>
+        </div>
+
+        <!-- Preview Player (Placeholder) -->
+        <div class="bg-black rounded shadow h-96 flex items-center justify-center">
+            <p class="text-white">Preview Player Loading...</p>
+        </div>
+    </div>
+
+    <script>
+        const path = window.location.pathname;
+        const streamName = path.split('/').pop();
+
+        async function loadStream() {
+            const res = await fetch(`/api/resource/Live Stream/${streamName}`);
+            const data = await res.json();
+            const stream = data.data;
+
+            document.getElementById('stream-title').innerText = stream.title;
+            document.getElementById('stream-key').value = stream.stream_key;
+
+            // In a real scenario, we'd fetch the Node IP from the assigned_node Link
+            // document.getElementById('ingest-url').value = `rtmp://${stream.assigned_node_ip}/live`;
+
+            const badge = document.getElementById('status-badge');
+            badge.innerText = stream.status;
+            if(stream.status === 'Live') {
+                badge.classList.remove('bg-gray-200');
+                badge.classList.add('bg-green-500', 'text-white');
+            }
+        }
+
+        function toggleShow() {
+            const input = document.getElementById('stream-key');
+            if (input.type === "password") input.type = "text";
+            else input.type = "password";
+        }
+
+        function copy(id) {
+            const copyText = document.getElementById(id);
+            copyText.select();
+            document.execCommand("copy");
+            alert("Copied!");
+        }
+
+        loadStream();
+    </script>
+</body>
+</html>
