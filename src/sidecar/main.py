@@ -9,7 +9,7 @@ from botocore.exceptions import NoCredentialsError
 NODE_ID = os.getenv("NODE_ID", "node-unknown")
 WATCH_DIR = "/data/live"
 BUCKET = os.getenv("S3_BUCKET", "my-bucket")
-ENDPOINT = os.getenv("S3_ENDPOINT", "https://s3.wasabisys.com")
+ENDPOINT = os.getenv("S3_ENDPOINT", "https://s3.example.com")
 INTERVAL = int(os.getenv("SYNC_INTERVAL", "30"))
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 

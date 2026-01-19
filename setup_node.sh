@@ -86,7 +86,7 @@ cat <<EOF > .env
 NODE_ID=$NODE_ID
 REGION=us-east-1
 SECRET_KEY=$(openssl rand -hex 16)
-S3_ENDPOINT=https://s3.wasabisys.com
+S3_ENDPOINT=https://s3.example.com
 S3_BUCKET=$BUCKET
 AWS_ACCESS_KEY_ID=$AWS_KEY
 AWS_SECRET_ACCESS_KEY=$AWS_SECRET
@@ -102,4 +102,5 @@ echo ">>> Launching Services..."
 
 echo ">>> Node $NODE_ID is READY!"
 echo ">>> Stream to: rtmp://$(curl -s ifconfig.me)/live/streamKey"
+echo ">>> Watch URL: http://$(curl -s ifconfig.me)/live/streamKey.mpd"
 echo ">>> Health check: http://$(curl -s ifconfig.me)/health"
