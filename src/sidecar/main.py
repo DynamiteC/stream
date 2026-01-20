@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import boto3
+import bisect
 from pathlib import Path
 from botocore.exceptions import NoCredentialsError
 from concurrent.futures import ThreadPoolExecutor
@@ -64,11 +65,17 @@ def run_sync_cycle():
 
                 app_name = app_dir.name
 
-                # Iterate FILES in the app directory (e.g. /data/live/live/*.m4s)
-                # SRS DASH structure: [stream].mpd and [stream]-[seq].m4s are in the same folder
+                # Optimize: Read directory once and separate files to avoid O(N^2) scanning
+                all_files = list(app_dir.iterdir())
+                manifests = [f for f in all_files if f.name.endswith('.mpd')]
+                segments = [f for f in all_files if f.name.endswith('.m4s')]
+
+                # Sort segments by name to enable binary search
+                segments.sort(key=lambda x: x.name)
+                segment_names = [s.name for s in segments]
 
                 # 1. Find Manifests to identify active streams
-                for manifest in app_dir.glob("*.mpd"):
+                for manifest in manifests:
                     stream_key = manifest.stem # filename without extension
 
                     # Upload Manifest
@@ -77,8 +84,17 @@ def run_sync_cycle():
 
                     # 2. Find related segments for this stream
                     # SRS usually names them: [stream]-[seq].m4s
-                    # We can use glob with the stream_key prefix
-                    for segment in app_dir.glob(f"{stream_key}-*.m4s"):
+                    prefix = f"{stream_key}-"
+
+                    # Use bisect to find the start index of segments matching the prefix
+                    start_idx = bisect.bisect_left(segment_names, prefix)
+
+                    # Iterate from the start index and stop when prefix no longer matches
+                    for i in range(start_idx, len(segments)):
+                        segment = segments[i]
+                        if not segment.name.startswith(prefix):
+                            break
+
                         if str(segment) in uploaded_files:
                             continue
 
