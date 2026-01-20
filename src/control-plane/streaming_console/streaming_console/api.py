@@ -26,6 +26,32 @@ def get_best_node():
     }
 
 @frappe.whitelist(allow_guest=True)
+def get_playback_urls(stream_key=None):
+    """
+    Generates playback URLs for a given stream key based on the assigned node.
+    """
+    if not stream_key:
+        frappe.throw(_("Missing stream_key"))
+
+    stream = frappe.db.get_value("Live Stream", {"stream_key": stream_key}, ["name", "assigned_node"], as_dict=True)
+    if not stream:
+        frappe.throw(_("Invalid Stream Key"))
+
+    node_ip = "127.0.0.1" # Default
+    if stream.assigned_node:
+        node_ip = frappe.db.get_value("Streaming Node", stream.assigned_node, "ip_address")
+
+    # In a real scenario, CDN domain might be configured in settings.
+    cdn_host = "cdn.platform.com"
+
+    return {
+        "hls": f"https://{cdn_host}/live/{stream_key}.m3u8",
+        "dash": f"https://{cdn_host}/live/{stream_key}.mpd",
+        "webrtc": f"webrtc://{node_ip}/live/{stream_key}",
+        "red5": f"rtmp://{node_ip}:1936/live/{stream_key}"
+    }
+
+@frappe.whitelist(allow_guest=True)
 def on_publish(stream_key=None):
     """
     SRS Hook: Called when a stream starts.
