@@ -4,6 +4,7 @@ import logging
 import boto3
 from pathlib import Path
 from botocore.exceptions import NoCredentialsError
+from concurrent.futures import ThreadPoolExecutor
 
 # Config
 NODE_ID = os.getenv("NODE_ID", "node-unknown")
@@ -44,21 +45,20 @@ def upload_file(local_path, s3_key):
     except Exception as e:
         logger.error(f"Upload failed: {e}")
 
-def sync_loop():
-    logger.info(f"Sidecar started for Node: {NODE_ID}. Watching {WATCH_DIR} (DRY_RUN={DRY_RUN})")
+def run_sync_cycle():
+    try:
+        # Structure: SRS outputs to /data/live/[app]/[stream].mpd
+        # Standard config: [app] is usually "live"
+        # So files are at: /data/live/live/streamkey.mpd
 
-    while True:
-        try:
-            # Structure: SRS outputs to /data/live/[app]/[stream].mpd
-            # Standard config: [app] is usually "live"
-            # So files are at: /data/live/live/streamkey.mpd
+        root = Path(WATCH_DIR)
+        if not root.exists():
+            logger.warning(f"Watch dir {WATCH_DIR} does not exist yet.")
+            time.sleep(5)
+            return
 
-            root = Path(WATCH_DIR)
-            if not root.exists():
-                logger.warning(f"Watch dir {WATCH_DIR} does not exist yet.")
-                time.sleep(5)
-                continue
-
+        # Use ThreadPoolExecutor to parallelize uploads
+        with ThreadPoolExecutor(max_workers=10) as executor:
             for app_dir in root.iterdir():
                 if not app_dir.is_dir(): continue
 
@@ -73,7 +73,7 @@ def sync_loop():
 
                     # Upload Manifest
                     s3_key_mpd = f"backups/{NODE_ID}/{app_name}/{stream_key}/{manifest.name}"
-                    upload_file(manifest, s3_key_mpd)
+                    executor.submit(upload_file, manifest, s3_key_mpd)
 
                     # 2. Find related segments for this stream
                     # SRS usually names them: [stream]-[seq].m4s
@@ -83,12 +83,17 @@ def sync_loop():
                             continue
 
                         s3_key_seg = f"backups/{NODE_ID}/{app_name}/{stream_key}/{segment.name}"
-                        upload_file(segment, s3_key_seg)
                         uploaded_files.add(str(segment))
+                        executor.submit(upload_file, segment, s3_key_seg)
 
-        except Exception as e:
-            logger.error(f"Error in loop: {e}")
+    except Exception as e:
+        logger.error(f"Error in loop: {e}")
 
+def sync_loop():
+    logger.info(f"Sidecar started for Node: {NODE_ID}. Watching {WATCH_DIR} (DRY_RUN={DRY_RUN})")
+
+    while True:
+        run_sync_cycle()
         time.sleep(INTERVAL)
 
 if __name__ == "__main__":
