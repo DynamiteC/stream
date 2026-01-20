@@ -71,7 +71,15 @@ def on_publish(stream_key=None):
     })
 
     # Increment Node Load (if node logic is tracking strict assignment)
-    # Ideally, we would increment the load on the node that actually received it.
+    node_id = frappe.request.headers.get("X-Node-ID")
+    if node_id:
+        if frappe.db.exists("Streaming Node", {"node_id": node_id}):
+            node = frappe.get_doc("Streaming Node", {"node_id": node_id})
+            node.current_load = (node.current_load or 0) + 1
+            node.save()
+
+            # Update assigned node to reflect reality
+            frappe.db.set_value("Live Stream", stream.name, "assigned_node", node.name)
 
     return {"code": 0, "msg": "OK"}
 
@@ -89,5 +97,13 @@ def on_unpublish(stream_key=None):
             "status": "Ended",
             "end_time": frappe.utils.now_datetime()
         })
+
+        # Decrement Node Load
+        node_id = frappe.request.headers.get("X-Node-ID")
+        if node_id:
+            if frappe.db.exists("Streaming Node", {"node_id": node_id}):
+                node = frappe.get_doc("Streaming Node", {"node_id": node_id})
+                node.current_load = max(0, (node.current_load or 0) - 1)
+                node.save()
 
     return {"code": 0, "msg": "OK"}
