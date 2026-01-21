@@ -58,6 +58,11 @@ def run_sync_cycle():
             time.sleep(5)
             return
 
+            # Prune uploaded_files set to only include files that currently exist
+            # This prevents the set from growing indefinitely.
+            existing_files = {str(p) for p in root.glob("**/*.m4s")}
+            uploaded_files.intersection_update(existing_files)
+
         # Use ThreadPoolExecutor to parallelize uploads
         with ThreadPoolExecutor(max_workers=10) as executor:
             for app_dir in root.iterdir():
