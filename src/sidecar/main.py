@@ -2,8 +2,10 @@ import os
 import time
 import logging
 import boto3
+import bisect
 from pathlib import Path
 from botocore.exceptions import NoCredentialsError
+from concurrent.futures import ThreadPoolExecutor
 
 # Config
 NODE_ID = os.getenv("NODE_ID", "node-unknown")
@@ -44,56 +46,75 @@ def upload_file(local_path, s3_key):
     except Exception as e:
         logger.error(f"Upload failed: {e}")
 
-def sync_loop():
-    logger.info(f"Sidecar started for Node: {NODE_ID}. Watching {WATCH_DIR} (DRY_RUN={DRY_RUN})")
+def run_sync_cycle():
+    try:
+        # Structure: SRS outputs to /data/live/[app]/[stream].mpd
+        # Standard config: [app] is usually "live"
+        # So files are at: /data/live/live/streamkey.mpd
 
-    while True:
-        try:
-            # Structure: SRS outputs to /data/live/[app]/[stream].mpd
-            # Standard config: [app] is usually "live"
-            # So files are at: /data/live/live/streamkey.mpd
-
-            root = Path(WATCH_DIR)
-            if not root.exists():
-                logger.warning(f"Watch dir {WATCH_DIR} does not exist yet.")
-                time.sleep(5)
-                continue
+        root = Path(WATCH_DIR)
+        if not root.exists():
+            logger.warning(f"Watch dir {WATCH_DIR} does not exist yet.")
+            time.sleep(5)
+            return
 
             # Prune uploaded_files set to only include files that currently exist
             # This prevents the set from growing indefinitely.
             existing_files = {str(p) for p in root.glob("**/*.m4s")}
             uploaded_files.intersection_update(existing_files)
 
+        # Use ThreadPoolExecutor to parallelize uploads
+        with ThreadPoolExecutor(max_workers=10) as executor:
             for app_dir in root.iterdir():
                 if not app_dir.is_dir(): continue
 
                 app_name = app_dir.name
 
-                # Iterate FILES in the app directory (e.g. /data/live/live/*.m4s)
-                # SRS DASH structure: [stream].mpd and [stream]-[seq].m4s are in the same folder
+                # Optimize: Read directory once and separate files to avoid O(N^2) scanning
+                all_files = list(app_dir.iterdir())
+                manifests = [f for f in all_files if f.name.endswith('.mpd')]
+                segments = [f for f in all_files if f.name.endswith('.m4s')]
+
+                # Sort segments by name to enable binary search
+                segments.sort(key=lambda x: x.name)
+                segment_names = [s.name for s in segments]
 
                 # 1. Find Manifests to identify active streams
-                for manifest in app_dir.glob("*.mpd"):
+                for manifest in manifests:
                     stream_key = manifest.stem # filename without extension
 
                     # Upload Manifest
                     s3_key_mpd = f"backups/{NODE_ID}/{app_name}/{stream_key}/{manifest.name}"
-                    upload_file(manifest, s3_key_mpd)
+                    executor.submit(upload_file, manifest, s3_key_mpd)
 
                     # 2. Find related segments for this stream
                     # SRS usually names them: [stream]-[seq].m4s
-                    # We can use glob with the stream_key prefix
-                    for segment in app_dir.glob(f"{stream_key}-*.m4s"):
+                    prefix = f"{stream_key}-"
+
+                    # Use bisect to find the start index of segments matching the prefix
+                    start_idx = bisect.bisect_left(segment_names, prefix)
+
+                    # Iterate from the start index and stop when prefix no longer matches
+                    for i in range(start_idx, len(segments)):
+                        segment = segments[i]
+                        if not segment.name.startswith(prefix):
+                            break
+
                         if str(segment) in uploaded_files:
                             continue
 
                         s3_key_seg = f"backups/{NODE_ID}/{app_name}/{stream_key}/{segment.name}"
-                        upload_file(segment, s3_key_seg)
                         uploaded_files.add(str(segment))
+                        executor.submit(upload_file, segment, s3_key_seg)
 
-        except Exception as e:
-            logger.error(f"Error in loop: {e}")
+    except Exception as e:
+        logger.error(f"Error in loop: {e}")
 
+def sync_loop():
+    logger.info(f"Sidecar started for Node: {NODE_ID}. Watching {WATCH_DIR} (DRY_RUN={DRY_RUN})")
+
+    while True:
+        run_sync_cycle()
         time.sleep(INTERVAL)
 
 if __name__ == "__main__":

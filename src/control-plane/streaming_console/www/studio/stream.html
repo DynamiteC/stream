@@ -7,6 +7,10 @@
     <title>Manage Stream</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="/assets/frappe/js/lib/jquery/jquery.min.js"></script>
+    <!-- Video.js -->
+    <link href="https://vjs.zencdn.net/7.20.3/video-js.css" rel="stylesheet" />
+    <script src="https://vjs.zencdn.net/7.20.3/video.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/videojs-contrib-hls/5.15.0/videojs-contrib-hls.min.js"></script>
 </head>
 <body class="bg-gray-100 font-sans">
     <div class="max-w-4xl mx-auto p-6">
@@ -36,19 +40,49 @@
                  <label class="block text-gray-700 text-sm font-bold mb-2">Status</label>
                  <span id="status-badge" class="px-3 py-1 bg-gray-200 rounded-full text-sm">Offline</span>
             </div>
+
+            <div class="mt-4">
+                <label class="block text-gray-700 text-sm font-bold mb-2">Playback Mode</label>
+                <select id="playback-mode" onchange="changePlayerMode()" class="shadow border rounded py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                    <option value="hls">Universal (HLS)</option>
+                    <option value="webrtc">Low Latency (WebRTC)</option>
+                    <option value="red5">Red5 Demo</option>
+                </select>
+            </div>
         </div>
 
-        <!-- Preview Player (Placeholder) -->
-        <div class="bg-black rounded shadow h-96 flex items-center justify-center">
-            <p class="text-white">Preview Player Loading...</p>
+        <!-- Preview Player -->
+        <div class="bg-black rounded shadow h-96 flex items-center justify-center overflow-hidden relative">
+            <div id="player-container" class="w-full h-full">
+                <!-- Video.js Player will be injected here -->
+                <video id="video-player" class="video-js vjs-default-skin vjs-big-play-centered w-full h-full" controls preload="auto"></video>
+            </div>
+            <div id="webrtc-player" class="hidden w-full h-full flex items-center justify-center text-white bg-black">
+                <!-- WebRTC Player -->
+                <video id="rtc-video" autoplay controls muted playsinline class="w-full h-full object-contain"></video>
+            </div>
+            <div id="red5-info" class="hidden w-full h-full flex items-center justify-center text-white bg-red-900">
+                <p class="text-center p-4">Red5 Demo Stream<br>RTMP URL: <span id="red5-url" class="font-mono bg-black p-1 rounded">...</span><br>(Use VLC to play)</p>
+            </div>
         </div>
     </div>
 
     <script>
         const path = window.location.pathname;
-        const streamName = path.split('/').pop();
+        let streamName = path.split('/').pop();
+
+        // Fallback for query param (Testing/Dev)
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('stream_key')) {
+            streamName = urlParams.get('stream_key');
+        }
+
+        let player = null;
+        let playbackUrls = {};
+        let rtcPeer = null;
 
         async function loadStream() {
+            // Fetch Stream Details
             const res = await fetch(`/api/resource/Live Stream/${streamName}`);
             const data = await res.json();
             const stream = data.data;
@@ -56,14 +90,116 @@
             document.getElementById('stream-title').innerText = stream.title;
             document.getElementById('stream-key').value = stream.stream_key;
 
-            // In a real scenario, we'd fetch the Node IP from the assigned_node Link
-            // document.getElementById('ingest-url').value = `rtmp://${stream.assigned_node_ip}/live`;
+            // Fetch playback URLs
+            try {
+                const urlRes = await fetch(`/api/method/streaming_console.streaming_console.api.get_playback_urls?stream_key=${stream.stream_key}`);
+                const urlData = await urlRes.json();
+                playbackUrls = urlData.message;
+            } catch (e) {
+                console.error("Failed to fetch playback URLs", e);
+            }
 
             const badge = document.getElementById('status-badge');
             badge.innerText = stream.status;
             if(stream.status === 'Live') {
                 badge.classList.remove('bg-gray-200');
                 badge.classList.add('bg-green-500', 'text-white');
+
+                // Initialize Player
+                initPlayer('hls');
+            }
+        }
+
+        function initPlayer(mode) {
+            // Teardown existing
+            if (player) {
+                player.dispose();
+                player = null;
+                document.getElementById('player-container').innerHTML = '<video id="video-player" class="video-js vjs-default-skin vjs-big-play-centered w-full h-full" controls preload="auto"></video>';
+            }
+            if (rtcPeer) {
+                rtcPeer.close();
+                rtcPeer = null;
+                document.getElementById('rtc-video').srcObject = null;
+            }
+
+            document.getElementById('player-container').classList.add('hidden');
+            document.getElementById('webrtc-player').classList.add('hidden');
+            document.getElementById('red5-info').classList.add('hidden');
+
+            if (mode === 'hls') {
+                document.getElementById('player-container').classList.remove('hidden');
+                player = videojs('video-player', {
+                    sources: [{
+                        src: playbackUrls.hls,
+                        type: 'application/x-mpegURL'
+                    }],
+                    fluid: true
+                });
+            } else if (mode === 'webrtc') {
+                document.getElementById('webrtc-player').classList.remove('hidden');
+                startWebRTC(playbackUrls.webrtc);
+            } else if (mode === 'red5') {
+                document.getElementById('red5-info').classList.remove('hidden');
+                document.getElementById('red5-url').innerText = playbackUrls.red5;
+            }
+        }
+
+        function changePlayerMode() {
+            const mode = document.getElementById('playback-mode').value;
+            initPlayer(mode);
+        }
+
+        async function startWebRTC(url) {
+            // SRS WebRTC Player Logic
+            // URL: webrtc://ip/app/stream
+
+            const video = document.getElementById('rtc-video');
+
+            // Parse URL
+            const urlObj = new URL(url.replace('webrtc://', 'http://'));
+            const ip = urlObj.hostname;
+            // SRS API Port 1985
+            const api = `http://${ip}:1985/rtc/v1/play/`;
+
+            // Prepare PeerConnection
+            rtcPeer = new RTCPeerConnection(null);
+            rtcPeer.addTransceiver("audio", {direction: "recvonly"});
+            rtcPeer.addTransceiver("video", {direction: "recvonly"});
+
+            rtcPeer.ontrack = function (e) {
+                video.srcObject = e.streams[0];
+            };
+
+            try {
+                const offer = await rtcPeer.createOffer();
+                await rtcPeer.setLocalDescription(offer);
+
+                // Exchange SDP with SRS
+                const response = await fetch(api, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        api: api,
+                        streamurl: url.replace('webrtc://', 'webrtc://'), // SRS expects webrtc://
+                        sdp: offer.sdp
+                    })
+                });
+
+                const data = await response.json();
+                if (data.code !== 0) {
+                    console.error("SRS WebRTC API Error:", data);
+                    alert("WebRTC Playback Failed: " + JSON.stringify(data));
+                    return;
+                }
+
+                await rtcPeer.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: data.sdp
+                }));
+
+            } catch (e) {
+                console.error("WebRTC Error:", e);
             }
         }
 

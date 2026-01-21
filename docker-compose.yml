@@ -7,10 +7,14 @@ services:
     container_name: srs_node
     ports:
       - "1935:1935" # RTMP Ingest
+      - "8000:8000/udp" # WebRTC UDP
+      - "1985:1985" # WebRTC Signaling (HTTP API)
       # - "8080:8080" # Built-in HTTP (We use Nginx instead)
     volumes:
       - ./src/srs/srs.conf:/usr/local/srs/conf/srs.conf
       - live_data:/usr/local/srs/objs/nginx/html # Shared Volume
+    environment:
+      - CANDIDATE=127.0.0.1 # Placeholder: Set this to the public IP in production
     command: ["./objs/srs", "-c", "conf/srs.conf"]
     networks:
       - streaming-net
@@ -80,6 +84,16 @@ services:
   redis:
     image: redis:6-alpine
     container_name: redis
+    networks:
+      - streaming-net
+
+  # 7. Demo Media Server (Red5)
+  red5:
+    image: red5/red5-server
+    container_name: red5_demo
+    ports:
+      - "1936:1935" # RTMP mapped to 1936
+      - "5080:5080" # HTTP mapped to 5080
     networks:
       - streaming-net
 

@@ -26,6 +26,32 @@ def get_best_node():
     }
 
 @frappe.whitelist(allow_guest=True)
+def get_playback_urls(stream_key=None):
+    """
+    Generates playback URLs for a given stream key based on the assigned node.
+    """
+    if not stream_key:
+        frappe.throw(_("Missing stream_key"))
+
+    stream = frappe.db.get_value("Live Stream", {"stream_key": stream_key}, ["name", "assigned_node"], as_dict=True)
+    if not stream:
+        frappe.throw(_("Invalid Stream Key"))
+
+    node_ip = "127.0.0.1" # Default
+    if stream.assigned_node:
+        node_ip = frappe.db.get_value("Streaming Node", stream.assigned_node, "ip_address")
+
+    # In a real scenario, CDN domain might be configured in settings.
+    cdn_host = "cdn.platform.com"
+
+    return {
+        "hls": f"https://{cdn_host}/live/{stream_key}.m3u8",
+        "dash": f"https://{cdn_host}/live/{stream_key}.mpd",
+        "webrtc": f"webrtc://{node_ip}/live/{stream_key}",
+        "red5": f"rtmp://{node_ip}:1936/live/{stream_key}"
+    }
+
+@frappe.whitelist(allow_guest=True)
 def on_publish(stream_key=None):
     """
     SRS Hook: Called when a stream starts.
@@ -45,7 +71,15 @@ def on_publish(stream_key=None):
     })
 
     # Increment Node Load (if node logic is tracking strict assignment)
-    # Ideally, we would increment the load on the node that actually received it.
+    node_id = frappe.request.headers.get("X-Node-ID")
+    if node_id:
+        if frappe.db.exists("Streaming Node", {"node_id": node_id}):
+            node = frappe.get_doc("Streaming Node", {"node_id": node_id})
+            node.current_load = (node.current_load or 0) + 1
+            node.save()
+
+            # Update assigned node to reflect reality
+            frappe.db.set_value("Live Stream", stream.name, "assigned_node", node.name)
 
     return {"code": 0, "msg": "OK"}
 
@@ -63,5 +97,13 @@ def on_unpublish(stream_key=None):
             "status": "Ended",
             "end_time": frappe.utils.now_datetime()
         })
+
+        # Decrement Node Load
+        node_id = frappe.request.headers.get("X-Node-ID")
+        if node_id:
+            if frappe.db.exists("Streaming Node", {"node_id": node_id}):
+                node = frappe.get_doc("Streaming Node", {"node_id": node_id})
+                node.current_load = max(0, (node.current_load or 0) - 1)
+                node.save()
 
     return {"code": 0, "msg": "OK"}
