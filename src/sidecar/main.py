@@ -59,6 +59,11 @@ def sync_loop():
                 time.sleep(5)
                 continue
 
+            # Prune uploaded_files set to only include files that currently exist
+            # This prevents the set from growing indefinitely.
+            existing_files = {str(p) for p in root.glob("**/*.m4s")}
+            uploaded_files.intersection_update(existing_files)
+
             for app_dir in root.iterdir():
                 if not app_dir.is_dir(): continue
 
