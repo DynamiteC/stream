@@ -41,8 +41,8 @@ def get_playback_urls(stream_key=None):
     if stream.assigned_node:
         node_ip = frappe.db.get_value("Streaming Node", stream.assigned_node, "ip_address")
 
-    # In a real scenario, CDN domain might be configured in settings.
-    cdn_host = "cdn.platform.com"
+    # Fetch CDN domain from settings
+    cdn_host = frappe.db.get_single_value("Streaming Settings", "cdn_host") or "cdn.platform.com"
 
     return {
         "hls": f"https://{cdn_host}/live/{stream_key}.m3u8",
@@ -73,13 +73,15 @@ def on_publish(stream_key=None):
     # Increment Node Load (if node logic is tracking strict assignment)
     node_id = frappe.request.headers.get("X-Node-ID")
     if node_id:
-        if frappe.db.exists("Streaming Node", {"node_id": node_id}):
+        try:
             node = frappe.get_doc("Streaming Node", {"node_id": node_id})
             node.current_load = (node.current_load or 0) + 1
             node.save()
 
             # Update assigned node to reflect reality
             frappe.db.set_value("Live Stream", stream.name, "assigned_node", node.name)
+        except frappe.DoesNotExistError:
+            pass
 
     return {"code": 0, "msg": "OK"}
 
@@ -101,9 +103,11 @@ def on_unpublish(stream_key=None):
         # Decrement Node Load
         node_id = frappe.request.headers.get("X-Node-ID")
         if node_id:
-            if frappe.db.exists("Streaming Node", {"node_id": node_id}):
+            try:
                 node = frappe.get_doc("Streaming Node", {"node_id": node_id})
                 node.current_load = max(0, (node.current_load or 0) - 1)
                 node.save()
+            except frappe.DoesNotExistError:
+                pass
 
     return {"code": 0, "msg": "OK"}

@@ -68,13 +68,16 @@ def run_sync_cycle():
                 app_name = app_dir.name
 
                 # Optimize: Read directory once and separate files to avoid O(N^2) scanning
-                all_files = list(app_dir.iterdir())
-                manifests = [f for f in all_files if f.name.endswith('.mpd')]
+                manifests = []
                 segments = []
-                for f in all_files:
-                    if f.name.endswith('.m4s'):
-                        segments.append(f)
-                        current_cycle_files.add(str(f))
+                with os.scandir(app_dir) as it:
+                    for entry in it:
+                        if entry.name.endswith('.mpd'):
+                            manifests.append(Path(entry.path))
+                        elif entry.name.endswith('.m4s'):
+                            p = Path(entry.path)
+                            segments.append(p)
+                            current_cycle_files.add(str(p))
 
                 # Sort segments by name to enable binary search
                 segments.sort(key=lambda x: x.name)

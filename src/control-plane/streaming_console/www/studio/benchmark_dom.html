@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>DOM Benchmark</title>
+</head>
+<body>
+    <h1>DOM Performance Benchmark</h1>
+    <button onclick="runBenchmark()">Run Benchmark</button>
+    <div id="results"></div>
+
+    <!-- Hidden containers for testing -->
+    <table style="display:none">
+        <tbody id="list-slow"></tbody>
+    </table>
+    <table style="display:none">
+        <tbody id="list-fast"></tbody>
+    </table>
+
+    <script>
+        const DATA_SIZE = 5000;
+        const data = Array.from({length: DATA_SIZE}, (_, i) => ({
+            title: `Stream ${i}`,
+            status: i % 2 === 0 ? 'Live' : 'Offline',
+            creation: new Date().toISOString(),
+            name: `stream-${i}`
+        }));
+
+        function measureSlow() {
+            const list = document.getElementById('list-slow');
+            list.innerHTML = '';
+            const start = performance.now();
+
+            data.forEach(stream => {
+                const row = `
+                    <tr>
+                        <td>${stream.title}</td>
+                        <td>${stream.status}</td>
+                        <td>${stream.creation}</td>
+                        <td><a href="/studio/stream/${stream.name}">Manage</a></td>
+                    </tr>
+                `;
+                list.innerHTML += row;
+            });
+
+            return performance.now() - start;
+        }
+
+        function measureFast() {
+            const list = document.getElementById('list-fast');
+            list.innerHTML = '';
+            const start = performance.now();
+
+            let rowsHtml = '';
+            data.forEach(stream => {
+                const row = `
+                    <tr>
+                        <td>${stream.title}</td>
+                        <td>${stream.status}</td>
+                        <td>${stream.creation}</td>
+                        <td><a href="/studio/stream/${stream.name}">Manage</a></td>
+                    </tr>
+                `;
+                rowsHtml += row;
+            });
+            list.innerHTML = rowsHtml;
+
+            return performance.now() - start;
+        }
+
+        function runBenchmark() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = 'Running...';
+
+            // Allow UI to update
+            setTimeout(() => {
+                const slowTime = measureSlow();
+                const fastTime = measureFast();
+
+                resultsDiv.innerHTML = `
+                    <p><strong>Slow (innerHTML +=):</strong> ${slowTime.toFixed(2)} ms</p>
+                    <p><strong>Fast (accumulator):</strong> ${fastTime.toFixed(2)} ms</p>
+                    <p><strong>Improvement:</strong> ${(slowTime / fastTime).toFixed(2)}x faster</p>
+                `;
+            }, 100);
+        }
+    </script>
+</body>
+</html>

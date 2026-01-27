@@ -10,6 +10,15 @@
     <script src="/assets/frappe/js/lib/moment.js"></script>
 </head>
 <body class="bg-gray-100 font-sans">
+    <script>
+        window.frappe = window.frappe || {};
+        frappe.csrf_token = "{{ frappe.session.csrf_token }}";
+        const currentUser = "{{ frappe.session.user }}";
+
+        if (currentUser === "Guest") {
+             window.location.href = "/login?redirect-to=/studio";
+        }
+    </script>
     <div class="max-w-6xl mx-auto p-6">
         <!-- Header -->
         <div class="flex justify-between items-center mb-8">
@@ -43,13 +52,24 @@
 
         async function loadStreams() {
             const response = await fetch('/api/resource/Live Stream?fields=["name","title","status","creation"]&filters=[["owner","=","current_user"]]', {
-                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-Frappe-CSRF-Token': frappe.csrf_token
+                }
             });
+
+            if (response.status === 401 || response.status === 403) {
+                window.location.href = "/login?redirect-to=/studio";
+                return;
+            }
+
             const data = await response.json();
             const list = document.getElementById('stream-list');
             list.innerHTML = '';
 
             if (data.data) {
+                let rowsHtml = '';
                 data.data.forEach(stream => {
                     const row = `
                         <tr>
@@ -70,8 +90,9 @@
                             </td>
                         </tr>
                     `;
-                    list.innerHTML += row;
+                    rowsHtml += row;
                 });
+                list.innerHTML = rowsHtml;
             }
         }
 
@@ -80,7 +101,19 @@
             if (!title) return;
 
             // Get Best Node
-            const nodeRes = await fetch('/api/method/streaming_console.streaming_console.api.get_best_node');
+            const nodeRes = await fetch('/api/method/streaming_console.streaming_console.api.get_best_node', {
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-Frappe-CSRF-Token': frappe.csrf_token
+                }
+            });
+
+            if (nodeRes.status === 401 || nodeRes.status === 403) {
+                window.location.href = "/login?redirect-to=/studio";
+                return;
+            }
+
             const nodeData = await nodeRes.json();
 
             if (nodeData.message) {
@@ -89,7 +122,11 @@
                 // Create Stream Doc
                 const res = await fetch('/api/resource/Live Stream', {
                     method: 'POST',
-                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Frappe-CSRF-Token': frappe.csrf_token },
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'X-Frappe-CSRF-Token': frappe.csrf_token
+                    },
                     body: JSON.stringify({
                         title: title,
                         assigned_node: assignedNode
@@ -98,6 +135,8 @@
 
                 if (res.ok) {
                     loadStreams();
+                } else if (res.status === 401 || res.status === 403) {
+                     window.location.href = "/login?redirect-to=/studio";
                 } else {
                     alert("Failed to create stream");
                 }
