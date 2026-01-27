@@ -16,7 +16,7 @@ NODE_ID=${1:-"node-$(hostname)"}
 AWS_KEY=$2
 AWS_SECRET=$3
 BUCKET=${4:-"my-streaming-platform"}
-REPO_URL="https://github.com/your-org/streaming-platform.git" # Replace with actual
+REPO_URL="https://github.com/DynamiteC/stream.git"
 
 if [ -z "$AWS_KEY" ] || [ -z "$AWS_SECRET" ]; then
     echo "Error: AWS Credentials required."
