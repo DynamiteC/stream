@@ -50,6 +50,7 @@
             list.innerHTML = '';
 
             if (data.data) {
+                let rowsHtml = '';
                 data.data.forEach(stream => {
                     const row = `
                         <tr>
@@ -70,8 +71,9 @@
                             </td>
                         </tr>
                     `;
-                    list.innerHTML += row;
+                    rowsHtml += row;
                 });
+                list.innerHTML = rowsHtml;
             }
         }
 
