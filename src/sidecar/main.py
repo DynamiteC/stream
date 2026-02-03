@@ -58,6 +58,9 @@ def run_sync_cycle():
             time.sleep(5)
             return
 
+
+        current_cycle_files = set()
+
         # Prune uploaded_files set to only include files that currently exist
         # This prevents the set from growing indefinitely.
         existing_files = {str(p) for p in root.glob("**/*.m4s")}
@@ -78,7 +81,9 @@ def run_sync_cycle():
                         if entry.name.endswith('.mpd'):
                             manifests.append(Path(entry.path))
                         elif entry.name.endswith('.m4s'):
-                            segments.append(Path(entry.path))
+                            p = Path(entry.path)
+                            segments.append(p)
+                            current_cycle_files.add(str(p))
 
                 # Sort segments by name to enable binary search
                 segments.sort(key=lambda x: x.name)
@@ -111,6 +116,9 @@ def run_sync_cycle():
                         s3_key_seg = f"backups/{NODE_ID}/{app_name}/{stream_key}/{segment.name}"
                         uploaded_files.add(str(segment))
                         executor.submit(upload_file, segment, s3_key_seg)
+
+        # Prune uploaded_files set to only include files that currently exist
+        uploaded_files.intersection_update(current_cycle_files)
 
     except Exception as e:
         logger.error(f"Error in loop: {e}")
