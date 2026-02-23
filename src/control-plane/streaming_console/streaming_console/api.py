@@ -39,10 +39,10 @@ def get_playback_urls(stream_key=None):
 
     node_ip = "127.0.0.1" # Default
     if stream.assigned_node:
-        node_ip = frappe.db.get_value("Streaming Node", stream.assigned_node, "ip_address")
+        node_ip = frappe.get_cached_value("Streaming Node", stream.assigned_node, "ip_address")
 
-    # Fetch CDN domain from settings
-    cdn_host = frappe.db.get_single_value("Streaming Settings", "cdn_host") or "cdn.platform.com"
+    # Fetch CDN domain from settings (cached)
+    cdn_host = frappe.db.get_single_value("Streaming Settings", "cdn_host", cache=True) or "cdn.platform.com"
 
     return {
         "hls": f"https://{cdn_host}/live/{stream_key}.m3u8",
