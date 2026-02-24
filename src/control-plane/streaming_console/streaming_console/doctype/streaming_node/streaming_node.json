@@ -51,6 +51,7 @@
    "default": "0",
    "fieldname": "current_load",
    "fieldtype": "Int",
+   "in_standard_filter": 1,
    "label": "Current Streams",
    "read_only": 1
   },
