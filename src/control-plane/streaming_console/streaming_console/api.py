@@ -103,11 +103,10 @@ def on_unpublish(stream_key=None):
         # Decrement Node Load
         node_id = frappe.request.headers.get("X-Node-ID")
         if node_id:
-            try:
-                node = frappe.get_doc("Streaming Node", {"node_id": node_id})
-                node.current_load = max(0, (node.current_load or 0) - 1)
-                node.save()
-            except frappe.DoesNotExistError:
-                pass
+            frappe.db.sql("""
+                UPDATE `tabStreaming Node`
+                SET current_load = GREATEST(0, COALESCE(current_load, 0) - 1)
+                WHERE node_id = %s
+            """, (node_id,))
 
     return {"code": 0, "msg": "OK"}
