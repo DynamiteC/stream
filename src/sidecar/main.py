@@ -3,11 +3,13 @@ import time
 import logging
 import boto3
 import bisect
+import threading
 from pathlib import Path
 from botocore.exceptions import NoCredentialsError
 from concurrent.futures import ThreadPoolExecutor
 
 # Config
+STOP_EVENT = threading.Event()
 NODE_ID = os.getenv("NODE_ID", "node-unknown")
 WATCH_DIR = "/data/live"
 BUCKET = os.getenv("S3_BUCKET", "my-bucket")
@@ -126,9 +128,9 @@ def run_sync_cycle():
 def sync_loop():
     logger.info(f"Sidecar started for Node: {NODE_ID}. Watching {WATCH_DIR} (DRY_RUN={DRY_RUN})")
 
-    while True:
+    while not STOP_EVENT.is_set():
         run_sync_cycle()
-        time.sleep(INTERVAL)
+        STOP_EVENT.wait(INTERVAL)
 
 if __name__ == "__main__":
     sync_loop()
