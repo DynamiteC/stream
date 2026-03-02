@@ -63,11 +63,6 @@ def run_sync_cycle():
 
         current_cycle_files = set()
 
-        # Prune uploaded_files set to only include files that currently exist
-        # This prevents the set from growing indefinitely.
-        existing_files = {str(p) for p in root.glob("**/*.m4s")}
-        uploaded_files.intersection_update(existing_files)
-
         # Use ThreadPoolExecutor to parallelize uploads
         with ThreadPoolExecutor(max_workers=10) as executor:
             for app_dir in root.iterdir():
@@ -85,6 +80,7 @@ def run_sync_cycle():
                         elif entry.name.endswith('.m4s'):
                             p = Path(entry.path)
                             segments.append(p)
+                            # Track file for pruning uploaded_files at the end of cycle
                             current_cycle_files.add(str(p))
 
                 # Sort segments by name to enable binary search
@@ -120,6 +116,7 @@ def run_sync_cycle():
                         executor.submit(upload_file, segment, s3_key_seg)
 
         # Prune uploaded_files set to only include files that currently exist
+        # (Using files tracked during the main loop iteration)
         uploaded_files.intersection_update(current_cycle_files)
 
     except Exception as e:
