@@ -73,15 +73,16 @@ def on_publish(stream_key=None):
     # Increment Node Load (if node logic is tracking strict assignment)
     node_id = frappe.request.headers.get("X-Node-ID")
     if node_id:
-        try:
-            node = frappe.get_doc("Streaming Node", {"node_id": node_id})
-            node.current_load = (node.current_load or 0) + 1
-            node.save()
+        node_name = frappe.db.get_value("Streaming Node", {"node_id": node_id}, "name")
+        if node_name:
+            frappe.db.sql("""
+                UPDATE `tabStreaming Node`
+                SET current_load = COALESCE(current_load, 0) + 1
+                WHERE name = %s
+            """, node_name)
 
             # Update assigned node to reflect reality
-            frappe.db.set_value("Live Stream", stream.name, "assigned_node", node.name)
-        except frappe.DoesNotExistError:
-            pass
+            frappe.db.set_value("Live Stream", stream.name, "assigned_node", node_name)
 
     return {"code": 0, "msg": "OK"}
 
