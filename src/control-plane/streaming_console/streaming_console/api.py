@@ -64,11 +64,11 @@ def on_publish(stream_key=None):
     if not stream:
         return {"code": 1, "msg": "Invalid Stream Key"}
 
-    # Update Status
-    frappe.db.set_value("Live Stream", stream.name, {
+    # Prepare Updates
+    updates = {
         "status": "Live",
         "start_time": frappe.utils.now_datetime()
-    })
+    }
 
     # Increment Node Load (if node logic is tracking strict assignment)
     node_id = frappe.request.headers.get("X-Node-ID")
@@ -82,7 +82,10 @@ def on_publish(stream_key=None):
             """, node_name)
 
             # Update assigned node to reflect reality
-            frappe.db.set_value("Live Stream", stream.name, "assigned_node", node_name)
+            updates["assigned_node"] = node_name
+
+    # Consolidate Stream Updates
+    frappe.db.set_value("Live Stream", stream.name, updates)
 
     return {"code": 0, "msg": "OK"}
 
@@ -101,14 +104,13 @@ def on_unpublish(stream_key=None):
             "end_time": frappe.utils.now_datetime()
         })
 
-        # Decrement Node Load
+        # Decrement Node Load atomically
         node_id = frappe.request.headers.get("X-Node-ID")
         if node_id:
-            try:
-                node = frappe.get_doc("Streaming Node", {"node_id": node_id})
-                node.current_load = max(0, (node.current_load or 0) - 1)
-                node.save()
-            except frappe.DoesNotExistError:
-                pass
+            frappe.db.sql("""
+                UPDATE `tabStreaming Node`
+                SET current_load = GREATEST(0, COALESCE(current_load, 0) - 1)
+                WHERE node_id = %s
+            """, node_id)
 
     return {"code": 0, "msg": "OK"}
