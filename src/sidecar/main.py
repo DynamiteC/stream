@@ -34,7 +34,12 @@ if not DRY_RUN:
     except Exception as e:
         logger.error(f"Failed to init S3 client: {e}")
 
+import concurrent.futures
+
 uploaded_files = set()
+
+# Global ThreadPoolExecutor to avoid instantiation overhead in loop
+executor = ThreadPoolExecutor(max_workers=10)
 
 def upload_file(local_path, s3_key):
     try:
@@ -68,56 +73,60 @@ def run_sync_cycle():
         existing_files = {str(p) for p in root.glob("**/*.m4s")}
         uploaded_files.intersection_update(existing_files)
 
-        # Use ThreadPoolExecutor to parallelize uploads
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            for app_dir in root.iterdir():
-                if not app_dir.is_dir(): continue
+        futures = []
 
-                app_name = app_dir.name
+        for app_dir in root.iterdir():
+            if not app_dir.is_dir(): continue
 
-                # Optimize: Read directory once and separate files to avoid O(N^2) scanning
-                manifests = []
-                segments = []
-                with os.scandir(app_dir) as it:
-                    for entry in it:
-                        if entry.name.endswith('.mpd'):
-                            manifests.append(Path(entry.path))
-                        elif entry.name.endswith('.m4s'):
-                            p = Path(entry.path)
-                            segments.append(p)
-                            current_cycle_files.add(str(p))
+            app_name = app_dir.name
 
-                # Sort segments by name to enable binary search
-                segments.sort(key=lambda x: x.name)
-                segment_names = [s.name for s in segments]
+            # Optimize: Read directory once and separate files to avoid O(N^2) scanning
+            manifests = []
+            segments = []
+            with os.scandir(app_dir) as it:
+                for entry in it:
+                    if entry.name.endswith('.mpd'):
+                        manifests.append(Path(entry.path))
+                    elif entry.name.endswith('.m4s'):
+                        p = Path(entry.path)
+                        segments.append(p)
+                        current_cycle_files.add(str(p))
 
-                # 1. Find Manifests to identify active streams
-                for manifest in manifests:
-                    stream_key = manifest.stem # filename without extension
+            # Sort segments by name to enable binary search
+            segments.sort(key=lambda x: x.name)
+            segment_names = [s.name for s in segments]
 
-                    # Upload Manifest
-                    s3_key_mpd = f"backups/{NODE_ID}/{app_name}/{stream_key}/{manifest.name}"
-                    executor.submit(upload_file, manifest, s3_key_mpd)
+            # 1. Find Manifests to identify active streams
+            for manifest in manifests:
+                stream_key = manifest.stem # filename without extension
 
-                    # 2. Find related segments for this stream
-                    # SRS usually names them: [stream]-[seq].m4s
-                    prefix = f"{stream_key}-"
+                # Upload Manifest
+                s3_key_mpd = f"backups/{NODE_ID}/{app_name}/{stream_key}/{manifest.name}"
+                futures.append(executor.submit(upload_file, manifest, s3_key_mpd))
 
-                    # Use bisect to find the start index of segments matching the prefix
-                    start_idx = bisect.bisect_left(segment_names, prefix)
+                # 2. Find related segments for this stream
+                # SRS usually names them: [stream]-[seq].m4s
+                prefix = f"{stream_key}-"
 
-                    # Iterate from the start index and stop when prefix no longer matches
-                    for i in range(start_idx, len(segments)):
-                        segment = segments[i]
-                        if not segment.name.startswith(prefix):
-                            break
+                # Use bisect to find the start index of segments matching the prefix
+                start_idx = bisect.bisect_left(segment_names, prefix)
 
-                        if str(segment) in uploaded_files:
-                            continue
+                # Iterate from the start index and stop when prefix no longer matches
+                for i in range(start_idx, len(segments)):
+                    segment = segments[i]
+                    if not segment.name.startswith(prefix):
+                        break
 
-                        s3_key_seg = f"backups/{NODE_ID}/{app_name}/{stream_key}/{segment.name}"
-                        uploaded_files.add(str(segment))
-                        executor.submit(upload_file, segment, s3_key_seg)
+                    if str(segment) in uploaded_files:
+                        continue
+
+                    s3_key_seg = f"backups/{NODE_ID}/{app_name}/{stream_key}/{segment.name}"
+                    uploaded_files.add(str(segment))
+                    futures.append(executor.submit(upload_file, segment, s3_key_seg))
+
+        # Wait for all uploads in this cycle to finish
+        if futures:
+            concurrent.futures.wait(futures)
 
         # Prune uploaded_files set to only include files that currently exist
         uploaded_files.intersection_update(current_cycle_files)
