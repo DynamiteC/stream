@@ -61,6 +61,29 @@ def get_playback_urls(stream_key=None):
         "expires": expires,
     }
 
+def _adjust_node_load(node_id, delta):
+    """Atomically adjust a node's current_load, clamped at zero.
+
+    Used for both increment (+1) and decrement (-1) so the two SRS hooks share
+    one consistent code path. Returns the node's document name, or None if the
+    node_id is missing/unknown.
+    """
+    if not node_id:
+        return None
+
+    node_name = frappe.db.get_value("Streaming Node", {"node_id": node_id}, "name")
+    if not node_name:
+        return None
+
+    # GREATEST guards against the counter going negative if hooks ever arrive
+    # out of order.
+    frappe.db.sql("""
+        UPDATE `tabStreaming Node`
+        SET current_load = GREATEST(0, COALESCE(current_load, 0) + %s)
+        WHERE name = %s
+    """, (delta, node_name))
+    return node_name
+
 @frappe.whitelist(allow_guest=True)
 def on_publish(stream_key=None):
     """
@@ -70,9 +93,15 @@ def on_publish(stream_key=None):
         return {"code": 1, "msg": "Missing stream_key"}
 
     # Validate Stream
-    stream = frappe.db.get_value("Live Stream", {"stream_key": stream_key}, ["name", "assigned_node"], as_dict=True)
+    stream = frappe.db.get_value("Live Stream", {"stream_key": stream_key}, ["name", "status"], as_dict=True)
     if not stream:
         return {"code": 1, "msg": "Invalid Stream Key"}
+
+    # Idempotency: SRS can call on_publish more than once for a single session
+    # (reconnects, retries). Only act on the first transition into Live so node
+    # load isn't double-counted -- the bug that left nodes stuck "full".
+    if stream.status == "Live":
+        return {"code": 0, "msg": "Already live"}
 
     # Update Status
     frappe.db.set_value("Live Stream", stream.name, {
@@ -80,19 +109,10 @@ def on_publish(stream_key=None):
         "start_time": frappe.utils.now_datetime()
     })
 
-    # Increment Node Load (if node logic is tracking strict assignment)
-    node_id = frappe.request.headers.get("X-Node-ID")
-    if node_id:
-        node_name = frappe.db.get_value("Streaming Node", {"node_id": node_id}, "name")
-        if node_name:
-            frappe.db.sql("""
-                UPDATE `tabStreaming Node`
-                SET current_load = COALESCE(current_load, 0) + 1
-                WHERE name = %s
-            """, node_name)
-
-            # Update assigned node to reflect reality
-            frappe.db.set_value("Live Stream", stream.name, "assigned_node", node_name)
+    # Increment Node Load and record which node is actually serving the stream.
+    node_name = _adjust_node_load(frappe.request.headers.get("X-Node-ID"), 1)
+    if node_name:
+        frappe.db.set_value("Live Stream", stream.name, "assigned_node", node_name)
 
     return {"code": 0, "msg": "OK"}
 
@@ -102,23 +122,25 @@ def on_unpublish(stream_key=None):
     SRS Hook: Called when a stream ends.
     """
     if not stream_key:
-        return
+        return {"code": 1, "msg": "Missing stream_key"}
 
-    stream = frappe.db.get_value("Live Stream", {"stream_key": stream_key}, "name")
-    if stream:
-        frappe.db.set_value("Live Stream", stream, {
-            "status": "Ended",
-            "end_time": frappe.utils.now_datetime()
-        })
+    stream = frappe.db.get_value("Live Stream", {"stream_key": stream_key}, ["name", "status"], as_dict=True)
+    if not stream:
+        return {"code": 0, "msg": "OK"}
 
-        # Decrement Node Load
-        node_id = frappe.request.headers.get("X-Node-ID")
-        if node_id:
-            try:
-                node = frappe.get_doc("Streaming Node", {"node_id": node_id})
-                node.current_load = max(0, (node.current_load or 0) - 1)
-                node.save()
-            except frappe.DoesNotExistError:
-                pass
+    # Idempotency: only decrement load on the first transition out of Live, so a
+    # repeated or late on_unpublish can't drive the counter below the true load.
+    if stream.status != "Live":
+        return {"code": 0, "msg": "Not live"}
+
+    frappe.db.set_value("Live Stream", stream.name, {
+        "status": "Ended",
+        "end_time": frappe.utils.now_datetime()
+    })
+
+    # Decrement Node Load (shares the clamped, atomic path with on_publish).
+    _adjust_node_load(frappe.request.headers.get("X-Node-ID"), -1)
+
+    return {"code": 0, "msg": "OK"}
 
     return {"code": 0, "msg": "OK"}
