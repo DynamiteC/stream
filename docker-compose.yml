@@ -62,6 +62,9 @@ services:
     volumes:
       - ./src/control-plane:/home/frappe/frappe-bench/apps/streaming_console
       - sites:/home/frappe/frappe-bench/sites
+    environment:
+      # Must match the nginx edge so signed playback URLs validate.
+      - SECRET_KEY=${SECRET_KEY}
     networks:
       - streaming-net
     depends_on:

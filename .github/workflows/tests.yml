@@ -6,8 +6,8 @@ on:
   pull_request:
 
 jobs:
-  sidecar:
-    name: Sidecar unit tests
+  unit:
+    name: Python unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

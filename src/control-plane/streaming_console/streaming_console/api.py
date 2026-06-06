@@ -1,6 +1,8 @@
 import frappe
 from frappe import _
 
+from streaming_console.secure_link import append_token, sign
+
 @frappe.whitelist()
 def get_best_node():
     """
@@ -44,11 +46,19 @@ def get_playback_urls(stream_key=None):
     # Fetch CDN domain from settings (cached)
     cdn_host = frappe.db.get_single_value("Streaming Settings", "cdn_host", cache=True) or "cdn.platform.com"
 
+    # Sign the HTTP playback URLs so the nginx edge (secure_link) serves them
+    # instead of returning 403. A single token authorises the whole session
+    # (manifest + segments) until it expires; players re-apply it to segment
+    # requests. The raw token/expires are returned so the player can do so.
+    token, expires = sign()
+
     return {
-        "hls": f"https://{cdn_host}/live/{stream_key}.m3u8",
-        "dash": f"https://{cdn_host}/live/{stream_key}.mpd",
+        "hls": append_token(f"https://{cdn_host}/live/{stream_key}.m3u8", token, expires),
+        "dash": append_token(f"https://{cdn_host}/live/{stream_key}.mpd", token, expires),
         "webrtc": f"webrtc://{node_ip}/live/{stream_key}",
-        "red5": f"rtmp://{node_ip}:1936/live/{stream_key}"
+        "red5": f"rtmp://{node_ip}:1936/live/{stream_key}",
+        "token": token,
+        "expires": expires,
     }
 
 @frappe.whitelist(allow_guest=True)
