@@ -19,7 +19,10 @@ services:
     networks:
       - streaming-net
     depends_on:
-      - control-plane
+      # Wait until the control plane is actually serving, so the very first
+      # on_publish webhook from SRS doesn't hit a connection-refused.
+      control-plane:
+        condition: service_healthy
 
   # 2. Delivery Edge
   nginx:
@@ -38,6 +41,13 @@ services:
       - SECRET_KEY=${SECRET_KEY}
     entrypoint: ["/entrypoint.sh"]
     command: ["nginx", "-g", "daemon off;"]
+    healthcheck:
+      # /health is not behind secure_link, so a 200 means the edge is serving.
+      test: ["CMD-SHELL", "wget -q -O - http://localhost/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # 3. Backup Agent
   sidecar:
@@ -68,8 +78,17 @@ services:
     networks:
       - streaming-net
     depends_on:
-      - redis
-      - timescaledb
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    healthcheck:
+      # Any HTTP response (even an auth error) means the app is up and serving.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:8000/api/method/ping || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
 
   # 5. Database (Priority 2: TimescaleDB)
   timescaledb:
@@ -82,6 +101,12 @@ services:
       - db_data:/var/lib/postgresql/data
     networks:
       - streaming-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d frappe"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # 6. Cache (Priority 5: Redis)
   redis:
@@ -89,6 +114,12 @@ services:
     container_name: redis
     networks:
       - streaming-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   # 7. Demo Media Server (Red5)
   red5:
