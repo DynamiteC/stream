@@ -42,16 +42,28 @@ uploaded_files = set()
 executor = ThreadPoolExecutor(max_workers=10)
 
 def upload_file(local_path, s3_key):
+    """Upload a file to S3.
+
+    Returns True when the file is safely backed up (or intentionally skipped in
+    DRY_RUN), and False when the upload failed and should be retried on a later
+    cycle. The caller uses this to decide whether to record the file as
+    uploaded.
+    """
     try:
         if DRY_RUN:
             logger.info(f"[DRY_RUN] Uploading {local_path} -> {s3_key}")
-            return
+            return True
 
-        if s3:
-            logger.info(f"Uploading {local_path} -> {s3_key}")
-            s3.upload_file(str(local_path), BUCKET, s3_key)
+        if not s3:
+            logger.error(f"S3 client unavailable; cannot upload {local_path}")
+            return False
+
+        logger.info(f"Uploading {local_path} -> {s3_key}")
+        s3.upload_file(str(local_path), BUCKET, s3_key)
+        return True
     except Exception as e:
         logger.error(f"Upload failed: {e}")
+        return False
 
 def run_sync_cycle():
     try:
@@ -77,6 +89,9 @@ def run_sync_cycle():
         uploaded_files.intersection_update(existing_files)
 
         futures = []
+        # (segment_path, future) pairs so we can record a segment as uploaded
+        # only after its upload has actually succeeded.
+        segment_futures = []
 
         # Map each manifest type to the segment extension it owns. SRS emits
         # DASH (.mpd + .m4s) and HLS (.m3u8 + .ts); a manifest must only claim
@@ -140,12 +155,25 @@ def run_sync_cycle():
                         continue
 
                     s3_key_seg = f"backups/{NODE_ID}/{app_name}/{stream_key}/{segment.name}"
-                    uploaded_files.add(str(segment))
-                    futures.append(executor.submit(upload_file, segment, s3_key_seg))
+                    fut = executor.submit(upload_file, segment, s3_key_seg)
+                    futures.append(fut)
+                    segment_futures.append((str(segment), fut))
 
         # Wait for all uploads in this cycle to finish
         if futures:
             concurrent.futures.wait(futures)
+
+        # Mark segments as uploaded only after a successful upload, so a
+        # transient S3 failure is retried on the next cycle instead of being
+        # silently skipped forever.
+        for seg_path, fut in segment_futures:
+            try:
+                if fut.result():
+                    uploaded_files.add(seg_path)
+            except Exception as e:
+                # upload_file swallows its own errors and returns False, so this
+                # is purely defensive; a raised error means "not uploaded".
+                logger.error(f"Upload task errored for {seg_path}: {e}")
 
         # Prune uploaded_files set to only include files that currently exist
         uploaded_files.intersection_update(current_cycle_files)

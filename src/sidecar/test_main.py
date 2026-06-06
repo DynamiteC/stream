@@ -19,13 +19,14 @@ from conftest import make_stream
 
 
 def test_upload_file_dry_run_skips_s3(sidecar, monkeypatch):
-    """In DRY_RUN mode no S3 call is made even if a client is configured."""
+    """In DRY_RUN mode no S3 call is made, but it reports success."""
     s3 = MagicMock()
     monkeypatch.setattr(sidecar, "DRY_RUN", True)
     monkeypatch.setattr(sidecar, "s3", s3)
 
-    sidecar.upload_file("/data/live/live/match1.mpd", "backups/n/live/match1.mpd")
+    ok = sidecar.upload_file("/data/live/live/match1.mpd", "backups/n/live/match1.mpd")
 
+    assert ok is True
     s3.upload_file.assert_not_called()
 
 
@@ -36,31 +37,32 @@ def test_upload_file_real_calls_s3(sidecar, monkeypatch):
     monkeypatch.setattr(sidecar, "s3", s3)
     monkeypatch.setattr(sidecar, "BUCKET", "test-bucket")
 
-    sidecar.upload_file("/data/live/live/match1.mpd", "backups/n/match1.mpd")
+    ok = sidecar.upload_file("/data/live/live/match1.mpd", "backups/n/match1.mpd")
 
+    assert ok is True
     s3.upload_file.assert_called_once_with(
         "/data/live/live/match1.mpd", "test-bucket", "backups/n/match1.mpd"
     )
 
 
-def test_upload_file_no_client_is_noop(sidecar, monkeypatch):
-    """When the S3 client failed to initialise, upload is a safe no-op."""
+def test_upload_file_no_client_reports_failure(sidecar, monkeypatch):
+    """When the S3 client failed to initialise, upload is a safe no-op that
+    reports failure so the file is retried later."""
     monkeypatch.setattr(sidecar, "DRY_RUN", False)
     monkeypatch.setattr(sidecar, "s3", None)
 
-    # Should not raise.
-    sidecar.upload_file("/data/live/live/match1.mpd", "backups/n/match1.mpd")
+    assert sidecar.upload_file("/data/live/live/match1.mpd", "backups/n/match1.mpd") is False
 
 
 def test_upload_file_swallows_exceptions(sidecar, monkeypatch):
-    """A failing upload must not crash the sync loop."""
+    """A failing upload must not crash the sync loop, and reports failure."""
     s3 = MagicMock()
     s3.upload_file.side_effect = RuntimeError("network down")
     monkeypatch.setattr(sidecar, "DRY_RUN", False)
     monkeypatch.setattr(sidecar, "s3", s3)
 
-    # Should not raise despite the S3 error.
-    sidecar.upload_file("/data/live/live/match1.mpd", "backups/n/match1.mpd")
+    # Should not raise despite the S3 error, and must report failure.
+    assert sidecar.upload_file("/data/live/live/match1.mpd", "backups/n/match1.mpd") is False
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +83,7 @@ def recorder(sidecar, monkeypatch):
     def _record(local_path, s3_key):
         with lock:
             calls.append((str(local_path), s3_key))
+        return True  # simulate a successful upload
 
     monkeypatch.setattr(sidecar, "upload_file", _record)
     return calls
@@ -277,3 +280,43 @@ def test_uploaded_set_pruned_when_segment_deleted(sidecar, recorder):
 
     assert str(segments[0]) not in sidecar.uploaded_files
     assert str(segments[1]) in sidecar.uploaded_files
+
+
+def test_failed_segment_upload_is_retried_next_cycle(sidecar, monkeypatch):
+    """A segment whose upload fails must not be marked done, so it retries.
+
+    Regression test: previously segments were added to ``uploaded_files``
+    *before* the upload ran, so a transient failure left them permanently
+    skipped (silent backup gaps).
+    """
+    import threading
+    from pathlib import Path
+
+    lock = threading.Lock()
+    cycle_keys = []
+    failing = {"match1-1.m4s"}  # first segment fails on the initial cycle
+
+    def _upload(local_path, s3_key):
+        with lock:
+            cycle_keys.append(s3_key)
+        return Path(local_path).name not in failing
+
+    monkeypatch.setattr(sidecar, "upload_file", _upload)
+    _manifest, segments = make_stream(
+        sidecar.WATCH_DIR, "live", "match1", num_segments=2
+    )
+
+    sidecar.run_sync_cycle()
+    # The failed segment is not recorded; the successful one is.
+    assert str(segments[0]) not in sidecar.uploaded_files
+    assert str(segments[1]) in sidecar.uploaded_files
+
+    # Next cycle: S3 has recovered. The failed segment is retried; the
+    # already-uploaded one is not re-submitted.
+    failing.clear()
+    cycle_keys.clear()
+    sidecar.run_sync_cycle()
+
+    assert "backups/test-node/live/match1/match1-1.m4s" in cycle_keys
+    assert "backups/test-node/live/match1/match1-2.m4s" not in cycle_keys
+    assert str(segments[0]) in sidecar.uploaded_files
