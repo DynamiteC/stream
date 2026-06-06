@@ -320,3 +320,36 @@ def test_failed_segment_upload_is_retried_next_cycle(sidecar, monkeypatch):
     assert "backups/test-node/live/match1/match1-1.m4s" in cycle_keys
     assert "backups/test-node/live/match1/match1-2.m4s" not in cycle_keys
     assert str(segments[0]) in sidecar.uploaded_files
+
+
+# ---------------------------------------------------------------------------
+# Graceful shutdown
+# ---------------------------------------------------------------------------
+
+
+def test_handle_shutdown_sets_stop_event(sidecar):
+    assert not sidecar.STOP_EVENT.is_set()
+
+    sidecar.handle_shutdown(15, None)  # SIGTERM
+
+    assert sidecar.STOP_EVENT.is_set()
+
+
+def test_sync_loop_exits_when_stopped_and_drains_executor(sidecar, monkeypatch):
+    """sync_loop runs cycles until STOP_EVENT is set, then drains uploads."""
+    fake_executor = MagicMock()
+    monkeypatch.setattr(sidecar, "executor", fake_executor)
+    monkeypatch.setattr(sidecar, "INTERVAL", 0)
+
+    cycles = []
+
+    def fake_cycle():
+        cycles.append(1)
+        sidecar.STOP_EVENT.set()  # request stop after the first cycle
+
+    monkeypatch.setattr(sidecar, "run_sync_cycle", fake_cycle)
+
+    sidecar.sync_loop()
+
+    assert len(cycles) == 1
+    fake_executor.shutdown.assert_called_once_with(wait=True)

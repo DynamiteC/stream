@@ -42,6 +42,7 @@ def sidecar(main_mod, tmp_path, monkeypatch):
     the missing-directory path doesn't actually block.
     """
     main_mod.uploaded_files.clear()
+    main_mod.STOP_EVENT.clear()
     monkeypatch.setattr(main_mod, "WATCH_DIR", str(tmp_path))
     monkeypatch.setattr(main_mod, "NODE_ID", "test-node")
     monkeypatch.setattr(main_mod.time, "sleep", lambda *_a, **_k: None)

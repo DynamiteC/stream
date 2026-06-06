@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import signal
 import boto3
 import bisect
 import threading
@@ -181,6 +182,11 @@ def run_sync_cycle():
     except Exception as e:
         logger.error(f"Error in loop: {e}")
 
+def handle_shutdown(signum, frame):
+    """Signal handler: stop after the current cycle finishes."""
+    logger.info(f"Received signal {signum}; shutting down after current cycle...")
+    STOP_EVENT.set()
+
 def sync_loop():
     logger.info(f"Sidecar started for Node: {NODE_ID}. Watching {WATCH_DIR} (DRY_RUN={DRY_RUN})")
 
@@ -188,5 +194,14 @@ def sync_loop():
         run_sync_cycle()
         STOP_EVENT.wait(INTERVAL)
 
+    # Let in-flight uploads finish before the process exits, so a container
+    # stop (SIGTERM) doesn't truncate a backup mid-upload.
+    logger.info("Draining in-flight uploads...")
+    executor.shutdown(wait=True)
+    logger.info("Sidecar stopped.")
+
 if __name__ == "__main__":
+    # Stop cleanly on container stop (SIGTERM) and Ctrl-C (SIGINT).
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
     sync_loop()
