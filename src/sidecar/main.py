@@ -69,11 +69,19 @@ def run_sync_cycle():
         current_cycle_files = set()
 
         # Prune uploaded_files set to only include files that currently exist
-        # This prevents the set from growing indefinitely.
+        # This prevents the set from growing indefinitely. Covers both DASH
+        # (.m4s) and HLS (.ts) segments so HLS entries aren't dropped and then
+        # needlessly re-uploaded each cycle.
         existing_files = {str(p) for p in root.glob("**/*.m4s")}
+        existing_files |= {str(p) for p in root.glob("**/*.ts")}
         uploaded_files.intersection_update(existing_files)
 
         futures = []
+
+        # Map each manifest type to the segment extension it owns. SRS emits
+        # DASH (.mpd + .m4s) and HLS (.m3u8 + .ts); a manifest must only claim
+        # segments of its own packaging format.
+        MANIFEST_SEGMENT_EXT = {".mpd": ".m4s", ".m3u8": ".ts"}
 
         for app_dir in root.iterdir():
             if not app_dir.is_dir(): continue
@@ -82,30 +90,41 @@ def run_sync_cycle():
 
             # Optimize: Read directory once and separate files to avoid O(N^2) scanning
             manifests = []
-            segments = []
+            # Segments are kept in separate buckets per extension so DASH and
+            # HLS sort/search independently.
+            segments_by_ext = {ext: [] for ext in MANIFEST_SEGMENT_EXT.values()}
             with os.scandir(app_dir) as it:
                 for entry in it:
-                    if entry.name.endswith('.mpd'):
+                    if entry.name.endswith('.mpd') or entry.name.endswith('.m3u8'):
                         manifests.append(Path(entry.path))
                     elif entry.name.endswith('.m4s'):
                         p = Path(entry.path)
-                        segments.append(p)
+                        segments_by_ext['.m4s'].append(p)
+                        current_cycle_files.add(str(p))
+                    elif entry.name.endswith('.ts'):
+                        p = Path(entry.path)
+                        segments_by_ext['.ts'].append(p)
                         current_cycle_files.add(str(p))
 
-            # Sort segments by name to enable binary search
-            segments.sort(key=lambda x: x.name)
-            segment_names = [s.name for s in segments]
+            # Sort each bucket by name to enable binary search, and pre-compute
+            # the parallel list of names bisect operates on.
+            sorted_segments = {}
+            for ext, segs in segments_by_ext.items():
+                segs.sort(key=lambda x: x.name)
+                sorted_segments[ext] = (segs, [s.name for s in segs])
 
             # 1. Find Manifests to identify active streams
             for manifest in manifests:
                 stream_key = manifest.stem # filename without extension
 
                 # Upload Manifest
-                s3_key_mpd = f"backups/{NODE_ID}/{app_name}/{stream_key}/{manifest.name}"
-                futures.append(executor.submit(upload_file, manifest, s3_key_mpd))
+                s3_key_manifest = f"backups/{NODE_ID}/{app_name}/{stream_key}/{manifest.name}"
+                futures.append(executor.submit(upload_file, manifest, s3_key_manifest))
 
-                # 2. Find related segments for this stream
-                # SRS usually names them: [stream]-[seq].m4s
+                # 2. Find related segments for this stream, scoped to the
+                # packaging format of this manifest.
+                # SRS names them: [stream]-[seq].m4s (DASH) / [stream]-[seq].ts (HLS)
+                segments, segment_names = sorted_segments[MANIFEST_SEGMENT_EXT[manifest.suffix]]
                 prefix = f"{stream_key}-"
 
                 # Use bisect to find the start index of segments matching the prefix

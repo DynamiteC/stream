@@ -48,22 +48,32 @@ def sidecar(main_mod, tmp_path, monkeypatch):
     return main_mod
 
 
-def make_stream(watch_dir, app, stream_key, num_segments):
+def make_stream(
+    watch_dir,
+    app,
+    stream_key,
+    num_segments,
+    *,
+    manifest_ext=".mpd",
+    segment_ext=".m4s",
+):
     """Create a manifest + ``num_segments`` segment files for a stream.
 
     Mirrors the SRS layout the sidecar expects:
-    ``<watch_dir>/<app>/<stream_key>.mpd`` and ``<stream_key>-<seq>.m4s``.
-    Returns the manifest Path and the list of segment Paths.
+    ``<watch_dir>/<app>/<stream_key><manifest_ext>`` plus
+    ``<stream_key>-<seq><segment_ext>`` segments. Defaults produce DASH
+    (``.mpd``/``.m4s``); pass ``manifest_ext=".m3u8", segment_ext=".ts"`` for
+    HLS. Returns the manifest Path and the list of segment Paths.
     """
     app_dir = Path(watch_dir) / app
     app_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest = app_dir / f"{stream_key}.mpd"
-    manifest.write_text("<MPD/>")
+    manifest = app_dir / f"{stream_key}{manifest_ext}"
+    manifest.write_text("manifest")
 
     segments = []
     for seq in range(1, num_segments + 1):
-        seg = app_dir / f"{stream_key}-{seq}.m4s"
+        seg = app_dir / f"{stream_key}-{seq}{segment_ext}"
         seg.write_bytes(b"segment-data")
         segments.append(seg)
 

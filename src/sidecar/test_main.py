@@ -178,6 +178,77 @@ def test_multiple_apps_are_isolated(sidecar, recorder):
     assert "backups/test-node/replay/match1/match1-1.m4s" in keys
 
 
+# ---------------------------------------------------------------------------
+# HLS (.m3u8 / .ts) backup
+# ---------------------------------------------------------------------------
+
+
+def test_uploads_hls_manifest_and_segments(sidecar, recorder):
+    make_stream(
+        sidecar.WATCH_DIR,
+        "live",
+        "match1",
+        num_segments=3,
+        manifest_ext=".m3u8",
+        segment_ext=".ts",
+    )
+
+    sidecar.run_sync_cycle()
+
+    assert s3_keys(recorder) == {
+        "backups/test-node/live/match1/match1.m3u8",
+        "backups/test-node/live/match1/match1-1.ts",
+        "backups/test-node/live/match1/match1-2.ts",
+        "backups/test-node/live/match1/match1-3.ts",
+    }
+
+
+def test_dash_and_hls_coexist_without_cross_claiming(sidecar, recorder):
+    """A DASH and HLS manifest for the same stream each own only their format.
+
+    The .mpd manifest must claim only .m4s segments and the .m3u8 manifest only
+    .ts segments, even though all four files share the ``match1-`` prefix.
+    """
+    make_stream(sidecar.WATCH_DIR, "live", "match1", num_segments=2)  # DASH
+    make_stream(
+        sidecar.WATCH_DIR,
+        "live",
+        "match1",
+        num_segments=2,
+        manifest_ext=".m3u8",
+        segment_ext=".ts",
+    )
+
+    sidecar.run_sync_cycle()
+
+    assert s3_keys(recorder) == {
+        "backups/test-node/live/match1/match1.mpd",
+        "backups/test-node/live/match1/match1-1.m4s",
+        "backups/test-node/live/match1/match1-2.m4s",
+        "backups/test-node/live/match1/match1.m3u8",
+        "backups/test-node/live/match1/match1-1.ts",
+        "backups/test-node/live/match1/match1-2.ts",
+    }
+
+
+def test_hls_segments_deduplicated_across_cycles(sidecar, recorder):
+    make_stream(
+        sidecar.WATCH_DIR,
+        "live",
+        "match1",
+        num_segments=2,
+        manifest_ext=".m3u8",
+        segment_ext=".ts",
+    )
+
+    sidecar.run_sync_cycle()
+    recorder.clear()
+    sidecar.run_sync_cycle()
+
+    # Only the manifest re-uploads; .ts segments are deduped like .m4s.
+    assert s3_keys(recorder) == {"backups/test-node/live/match1/match1.m3u8"}
+
+
 def test_non_directory_entries_ignored(sidecar, recorder):
     """Stray files at the watch-dir root are skipped (only app dirs scanned)."""
     from pathlib import Path
