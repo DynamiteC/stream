@@ -1,0 +1,15 @@
+# Coverage is scoped (via --cov in pytest.ini) to the sidecar and the
+# control-plane package. The control-plane also contains Frappe-dependent
+# modules (api.py, hooks.py, doctypes) that can only run inside a Frappe site,
+# so they're omitted here and covered separately by `bench run-tests`.
+[run]
+omit =
+    */test_*.py
+    */conftest.py
+    */__init__.py
+    */doctype/*
+    */api.py
+    */hooks.py
+
+[report]
+show_missing = True

@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import signal
 import boto3
 import bisect
 import threading
@@ -42,16 +43,28 @@ uploaded_files = set()
 executor = ThreadPoolExecutor(max_workers=10)
 
 def upload_file(local_path, s3_key):
+    """Upload a file to S3.
+
+    Returns True when the file is safely backed up (or intentionally skipped in
+    DRY_RUN), and False when the upload failed and should be retried on a later
+    cycle. The caller uses this to decide whether to record the file as
+    uploaded.
+    """
     try:
         if DRY_RUN:
             logger.info(f"[DRY_RUN] Uploading {local_path} -> {s3_key}")
-            return
+            return True
 
-        if s3:
-            logger.info(f"Uploading {local_path} -> {s3_key}")
-            s3.upload_file(str(local_path), BUCKET, s3_key)
+        if not s3:
+            logger.error(f"S3 client unavailable; cannot upload {local_path}")
+            return False
+
+        logger.info(f"Uploading {local_path} -> {s3_key}")
+        s3.upload_file(str(local_path), BUCKET, s3_key)
+        return True
     except Exception as e:
         logger.error(f"Upload failed: {e}")
+        return False
 
 def run_sync_cycle():
     try:
@@ -69,11 +82,22 @@ def run_sync_cycle():
         current_cycle_files = set()
 
         # Prune uploaded_files set to only include files that currently exist
-        # This prevents the set from growing indefinitely.
+        # This prevents the set from growing indefinitely. Covers both DASH
+        # (.m4s) and HLS (.ts) segments so HLS entries aren't dropped and then
+        # needlessly re-uploaded each cycle.
         existing_files = {str(p) for p in root.glob("**/*.m4s")}
+        existing_files |= {str(p) for p in root.glob("**/*.ts")}
         uploaded_files.intersection_update(existing_files)
 
         futures = []
+        # (segment_path, future) pairs so we can record a segment as uploaded
+        # only after its upload has actually succeeded.
+        segment_futures = []
+
+        # Map each manifest type to the segment extension it owns. SRS emits
+        # DASH (.mpd + .m4s) and HLS (.m3u8 + .ts); a manifest must only claim
+        # segments of its own packaging format.
+        MANIFEST_SEGMENT_EXT = {".mpd": ".m4s", ".m3u8": ".ts"}
 
         for app_dir in root.iterdir():
             if not app_dir.is_dir(): continue
@@ -82,30 +106,41 @@ def run_sync_cycle():
 
             # Optimize: Read directory once and separate files to avoid O(N^2) scanning
             manifests = []
-            segments = []
+            # Segments are kept in separate buckets per extension so DASH and
+            # HLS sort/search independently.
+            segments_by_ext = {ext: [] for ext in MANIFEST_SEGMENT_EXT.values()}
             with os.scandir(app_dir) as it:
                 for entry in it:
-                    if entry.name.endswith('.mpd'):
+                    if entry.name.endswith('.mpd') or entry.name.endswith('.m3u8'):
                         manifests.append(Path(entry.path))
                     elif entry.name.endswith('.m4s'):
                         p = Path(entry.path)
-                        segments.append(p)
+                        segments_by_ext['.m4s'].append(p)
+                        current_cycle_files.add(str(p))
+                    elif entry.name.endswith('.ts'):
+                        p = Path(entry.path)
+                        segments_by_ext['.ts'].append(p)
                         current_cycle_files.add(str(p))
 
-            # Sort segments by name to enable binary search
-            segments.sort(key=lambda x: x.name)
-            segment_names = [s.name for s in segments]
+            # Sort each bucket by name to enable binary search, and pre-compute
+            # the parallel list of names bisect operates on.
+            sorted_segments = {}
+            for ext, segs in segments_by_ext.items():
+                segs.sort(key=lambda x: x.name)
+                sorted_segments[ext] = (segs, [s.name for s in segs])
 
             # 1. Find Manifests to identify active streams
             for manifest in manifests:
                 stream_key = manifest.stem # filename without extension
 
                 # Upload Manifest
-                s3_key_mpd = f"backups/{NODE_ID}/{app_name}/{stream_key}/{manifest.name}"
-                futures.append(executor.submit(upload_file, manifest, s3_key_mpd))
+                s3_key_manifest = f"backups/{NODE_ID}/{app_name}/{stream_key}/{manifest.name}"
+                futures.append(executor.submit(upload_file, manifest, s3_key_manifest))
 
-                # 2. Find related segments for this stream
-                # SRS usually names them: [stream]-[seq].m4s
+                # 2. Find related segments for this stream, scoped to the
+                # packaging format of this manifest.
+                # SRS names them: [stream]-[seq].m4s (DASH) / [stream]-[seq].ts (HLS)
+                segments, segment_names = sorted_segments[MANIFEST_SEGMENT_EXT[manifest.suffix]]
                 prefix = f"{stream_key}-"
 
                 # Use bisect to find the start index of segments matching the prefix
@@ -121,18 +156,36 @@ def run_sync_cycle():
                         continue
 
                     s3_key_seg = f"backups/{NODE_ID}/{app_name}/{stream_key}/{segment.name}"
-                    uploaded_files.add(str(segment))
-                    futures.append(executor.submit(upload_file, segment, s3_key_seg))
+                    fut = executor.submit(upload_file, segment, s3_key_seg)
+                    futures.append(fut)
+                    segment_futures.append((str(segment), fut))
 
         # Wait for all uploads in this cycle to finish
         if futures:
             concurrent.futures.wait(futures)
+
+        # Mark segments as uploaded only after a successful upload, so a
+        # transient S3 failure is retried on the next cycle instead of being
+        # silently skipped forever.
+        for seg_path, fut in segment_futures:
+            try:
+                if fut.result():
+                    uploaded_files.add(seg_path)
+            except Exception as e:
+                # upload_file swallows its own errors and returns False, so this
+                # is purely defensive; a raised error means "not uploaded".
+                logger.error(f"Upload task errored for {seg_path}: {e}")
 
         # Prune uploaded_files set to only include files that currently exist
         uploaded_files.intersection_update(current_cycle_files)
 
     except Exception as e:
         logger.error(f"Error in loop: {e}")
+
+def handle_shutdown(signum, frame):
+    """Signal handler: stop after the current cycle finishes."""
+    logger.info(f"Received signal {signum}; shutting down after current cycle...")
+    STOP_EVENT.set()
 
 def sync_loop():
     logger.info(f"Sidecar started for Node: {NODE_ID}. Watching {WATCH_DIR} (DRY_RUN={DRY_RUN})")
@@ -141,5 +194,14 @@ def sync_loop():
         run_sync_cycle()
         STOP_EVENT.wait(INTERVAL)
 
+    # Let in-flight uploads finish before the process exits, so a container
+    # stop (SIGTERM) doesn't truncate a backup mid-upload.
+    logger.info("Draining in-flight uploads...")
+    executor.shutdown(wait=True)
+    logger.info("Sidecar stopped.")
+
 if __name__ == "__main__":
+    # Stop cleanly on container stop (SIGTERM) and Ctrl-C (SIGINT).
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
     sync_loop()

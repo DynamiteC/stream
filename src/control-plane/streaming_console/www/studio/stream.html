@@ -129,6 +129,21 @@
 
             if (mode === 'hls') {
                 document.getElementById('player-container').classList.remove('hidden');
+
+                // The secure_link token authorises the whole session, but video.js
+                // resolves segment URIs from the manifest and drops its query
+                // string. Re-apply the token to every request that lacks it.
+                if (videojs.Vhs && playbackUrls.token) {
+                    videojs.Vhs.xhr.beforeRequest = function(options) {
+                        if (options.uri && options.uri.indexOf('token=') === -1) {
+                            const sep = options.uri.indexOf('?') === -1 ? '?' : '&';
+                            options.uri += sep + 'token=' + encodeURIComponent(playbackUrls.token) +
+                                '&expires=' + encodeURIComponent(playbackUrls.expires);
+                        }
+                        return options;
+                    };
+                }
+
                 player = videojs('video-player', {
                     sources: [{
                         src: playbackUrls.hls,
